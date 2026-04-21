@@ -4,6 +4,36 @@ import pickle
 import os
 import argparse
 
+def load_adhominem_tsv(path):
+    docs_L, docs_R, labels = [], [], []
+
+    with open(path, "r", encoding="utf-8") as f:
+        for i, line in enumerate(f, start=1):
+            line = line.rstrip("\n")
+            if not line:
+                continue
+
+            parts = line.split("\t", 1)
+            if len(parts) != 2:
+                print(f"[BAD LINE {i}] no tab found:")
+                print(line[:300])
+                continue
+
+            label, text = parts
+
+            if "$$$" not in text:
+                print(f"[BAD LINE {i}] no $$$ found:")
+                print(text[:300])
+                continue
+
+            text1, text2 = text.split("$$$", 1)
+
+            docs_L.append(text1)
+            docs_R.append(text2)
+            labels.append(int(label))
+
+    print("Loaded pairs:", len(labels))
+    return docs_L, docs_R, labels
 
 def main():
 
@@ -29,6 +59,11 @@ def main():
     parser.add_argument('-keep_prob_lstm', default=0.9, type=float)  # variational dropout for BiLSTM layer
     parser.add_argument('-keep_prob_att', default=0.9, type=float)  # dropout for attention layer
     parser.add_argument('-keep_prob_metric', default=0.9, type=float)  # dropout for metric learning layer
+
+    parser.add_argument("-mode", type=str, default="train", choices=["train", "test"])
+    parser.add_argument("-ckpt", type=str, default="checkpoints/adhominem")
+    args = parser.parse_args()
+
     hyper_parameters = vars(parser.parse_args())
 
     # create folder for results
@@ -37,7 +72,7 @@ def main():
         os.makedirs(dir_results)
 
     # load docs, vocabularies and initialized word embeddings
-    with open(os.path.join("data", "data_Amazon_9000"), 'rb') as f:
+    with open(os.path.join("data", "data_PAN20train_small"), 'rb') as f:
         docs_L_tr, docs_R_tr, labels_tr, \
         docs_L_te, docs_R_te, labels_te, \
         V_w, E_w, V_c = pickle.load(f)
@@ -75,8 +110,31 @@ def main():
     # start training
     train_set = (docs_L_tr, docs_R_tr, labels_tr)
     test_set = (docs_L_te, docs_R_te, labels_te)
-    adhominem.train_model(train_set, test_set, file_results)
+    
 
+    if args.mode == "train":
+        adhominem.train_model(train_set, test_set, file_results)
+
+    elif args.mode == "test":
+        adhominem.restore_model(args.ckpt)
+
+        test_file = os.environ.get("ADH_AMAZON_TEST_FILE", None)
+        if test_file:
+
+            split_name = os.path.splitext(os.path.basename(test_file))[0]
+            docs_L_te, docs_R_te, labels_te = load_adhominem_tsv(test_file)
+            print("Using external test file:", test_file)
+        else:
+            split_name = "PAN20_fixed_test"
+            print("Using default PAN20 test set from pickle")
+
+        adhominem.evaluate_model(
+            docs_L_te,
+            docs_R_te,
+            labels_te,
+            batch_size=40,
+            split_name=split_name
+        )
     # close session
     adhominem.sess.close()
 

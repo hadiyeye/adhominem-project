@@ -10,6 +10,10 @@ import pandas as pd
 from sklearn.utils import shuffle
 import random
 
+def _load_amazon_df(data_dir, filename):
+    import pandas as pd
+    return pd.read_csv(os.path.join(data_dir, filename), sep="\t")
+
 
 class Corpus(object):
 
@@ -23,7 +27,16 @@ class Corpus(object):
         self.tokenizer = spacy.load('en_core_web_lg')
         
         # load raw data
-        self.data_panda = pd.read_csv('{}'.format(os.path.join('data', 'amazon.csv')), sep='\t')
+        # --- Amazon data path (configurable) ---
+        data_dir = os.environ.get("ADH_DATA_DIR", os.path.join(os.getcwd(), "data"))
+
+        amazon_train_file = os.environ.get("ADH_AMAZON_TRAIN_FILE", "amazon_train.tsv")
+        amazon_test_file  = os.environ.get("ADH_AMAZON_TEST_FILE",  "amazon_test_orig.tsv")
+
+        self.data_panda_train = pd.read_csv(os.path.join(data_dir, amazon_train_file), sep="\t")
+        self.data_panda_test  = pd.read_csv(os.path.join(data_dir, amazon_test_file),  sep="\t")
+
+
 
         # load pre-trained fastText word embedding model
         self.WE_dic = fasttext.load_model(os.path.join('data', 'cc.en.300.bin'))
@@ -77,10 +90,14 @@ class Corpus(object):
     # extract docs
     def extract_docs(self):
 
-        for idx in tqdm(range(self.data_panda.review.shape[0]), desc='preprocess docs'):
+    # ---------- TRAIN ----------
+        for idx in tqdm(range(self.data_panda_train.review.shape[0]), desc='preprocess TRAIN docs'):
 
-            temp = self.data_panda.review[idx].split('$$$')
+            temp = self.data_panda_train.review.iloc[idx].split('$$$')
+            if len(temp) != 2:
+                continue  # skip malformed rows
 
+            # randomize left/right order (ok to keep)
             if random.uniform(0, 1) < 0.5:
                 doc_1 = BeautifulSoup(temp[0], 'html.parser').get_text().encode('utf-8').decode('utf-8')
                 doc_2 = BeautifulSoup(temp[1], 'html.parser').get_text().encode('utf-8').decode('utf-8')
@@ -92,29 +109,47 @@ class Corpus(object):
             doc_1 = self.preprocess_doc(doc_1)
             doc_2 = self.preprocess_doc(doc_2)
 
-            r = random.uniform(0, 1)
-
-            if r > self.test_split:
-                # count tokens/characters in train set
-                self.count_tokens_and_characters(doc_1)
-                self.count_tokens_and_characters(doc_2)
+            # count tokens/characters in train set
+            self.count_tokens_and_characters(doc_1)
+            self.count_tokens_and_characters(doc_2)
 
             # add special tokens
             doc_1 = self.add_special_tokens_doc(doc_1)
             doc_2 = self.add_special_tokens_doc(doc_2)
 
-            if r > self.test_split:
-                # add doc-pair to train set
-                self.docs_L_tr.append(doc_1)
-                self.docs_R_tr.append(doc_2)
-                self.labels_tr.append(self.data_panda.sentiment[idx])
+            # add doc-pair to train set
+            self.docs_L_tr.append(doc_1)
+            self.docs_R_tr.append(doc_2)
+            self.labels_tr.append(self.data_panda_train.sentiment.iloc[idx])
 
+        # ---------- TEST ----------
+        for idx in tqdm(range(self.data_panda_test.review.shape[0]), desc='preprocess TEST docs'):
+
+            temp = self.data_panda_test.review.iloc[idx].split('$$$')
+            if len(temp) != 2:
+                continue  # skip malformed rows
+
+            # randomize left/right order (ok to keep)
+            if random.uniform(0, 1) < 0.5:
+                doc_1 = BeautifulSoup(temp[0], 'html.parser').get_text().encode('utf-8').decode('utf-8')
+                doc_2 = BeautifulSoup(temp[1], 'html.parser').get_text().encode('utf-8').decode('utf-8')
             else:
-                # ad doc-pair to test set
-                self.docs_L_te.append(doc_1)
-                self.docs_R_te.append(doc_2)
-                self.labels_te.append(self.data_panda.sentiment[idx])
-            
+                doc_2 = BeautifulSoup(temp[0], 'html.parser').get_text().encode('utf-8').decode('utf-8')
+                doc_1 = BeautifulSoup(temp[1], 'html.parser').get_text().encode('utf-8').decode('utf-8')
+
+            # preprocessing and tokenizing
+            doc_1 = self.preprocess_doc(doc_1)
+            doc_2 = self.preprocess_doc(doc_2)
+
+            # add special tokens
+            doc_1 = self.add_special_tokens_doc(doc_1)
+            doc_2 = self.add_special_tokens_doc(doc_2)
+
+            # add doc-pair to test set
+            self.docs_L_te.append(doc_1)
+            self.docs_R_te.append(doc_2)
+            self.labels_te.append(self.data_panda_test.sentiment.iloc[idx])
+
         # shuffle
         self.docs_L_tr, self.docs_R_tr, self.labels_tr = shuffle(self.docs_L_tr, self.docs_R_tr, self.labels_tr)
         self.docs_L_te, self.docs_R_te, self.labels_te = shuffle(self.docs_L_te, self.docs_R_te, self.labels_te)

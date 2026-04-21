@@ -59,6 +59,8 @@ class AdHominem():
         self.optimizer, self.step = self.prepare_optimizer()
 
         # launch session
+        self.saver = tf.train.Saver(max_to_keep=5)
+
         self.sess = tf.Session()
         self.sess.run(tf.global_variables_initializer())
 
@@ -952,30 +954,173 @@ class AdHominem():
     ################
     @staticmethod
     def grid_search(pred, labels):
+        pred = np.array(pred).reshape(-1)
+        labels = np.array(labels).reshape(-1)
+
         L = list(np.linspace(0, 0.3, 31))
         scores = []
         scores_o = []
-        pred.reshape(-1)
-        labels.reshape(-1)
+
         for l in L:
             l1 = 0.5 - l
             l2 = 0.5 + l
-            m1 = pred > l1
-            m2 = pred < l2
+
+            mask = (pred > l1) & (pred < l2)
+
             pred_l = pred.copy()
-            pred_l[m1 * m2] = 0.5
+            pred_l[mask] = 0.5
+
             s = evaluate_all(pred_y=pred_l, true_y=labels)
             scores.append(s)
             scores_o.append(s['overall'])
+
         j = int(np.argmax(scores_o))
         return scores[j], L[j]
 
-    def evaluate_model(self, docs_L, docs_R, labels, batch_size):
+    def debug_predictions_to_file(self, pred, labels, best_l, out_txt):
+        import numpy as np
 
+        pred = np.array(pred).reshape(-1)
+        labels = np.array(labels).reshape(-1)
+
+        lines = []
+
+        lines.append("===== BASIC INFO =====")
+        lines.append(f"num samples: {len(pred)}")
+        lines.append(f"num label=1: {np.sum(labels == 1)}")
+        lines.append(f"num label=0: {np.sum(labels == 0)}")
+        lines.append(f"label positive ratio: {np.mean(labels == 1)}")
+
+        lines.append("\n===== RAW PRED STATS =====")
+        lines.append(f"pred min: {np.min(pred)}")
+        lines.append(f"pred max: {np.max(pred)}")
+        lines.append(f"pred mean: {np.mean(pred)}")
+        lines.append(f"pred median: {np.median(pred)}")
+        lines.append(f"pred std: {np.std(pred)}")
+
+        pred_same = pred[labels == 1]
+        pred_diff = pred[labels == 0]
+
+        if len(pred_same) > 0:
+            lines.append(f"same-author pred mean: {np.mean(pred_same)}")
+            lines.append(f"same-author pred std: {np.std(pred_same)}")
+            lines.append(f"same-author pred min: {np.min(pred_same)}")
+            lines.append(f"same-author pred max: {np.max(pred_same)}")
+
+        if len(pred_diff) > 0:
+            lines.append(f"different-author pred mean: {np.mean(pred_diff)}")
+            lines.append(f"different-author pred std: {np.std(pred_diff)}")
+            lines.append(f"different-author pred min: {np.min(pred_diff)}")
+            lines.append(f"different-author pred max: {np.max(pred_diff)}")
+
+        lines.append("\n===== RAW ACCURACY =====")
+        pred_bin_raw = pred.copy()
+        pred_bin_raw[pred_bin_raw >= 0.5] = 1
+        pred_bin_raw[pred_bin_raw < 0.5] = 0
+        acc_raw = np.mean(pred_bin_raw == labels)
+        lines.append(f"raw acc: {acc_raw}")
+
+        lines.append("\n===== THRESHOLD INFO =====")
+        l1 = 0.5 - best_l
+        l2 = 0.5 + best_l
+        lines.append(f"best_l: {best_l}")
+        lines.append(f"uncertainty interval: ({l1:.3f}, {l2:.3f})")
+
+        mask_uncertain = (pred > l1) & (pred < l2)
+        num_uncertain = np.sum(mask_uncertain)
+        ratio_uncertain = np.mean(mask_uncertain)
+
+        lines.append(f"uncertain count: {num_uncertain}")
+        lines.append(f"uncertainty ratio: {ratio_uncertain}")
+
+        same_mask = (labels == 1)
+        diff_mask = (labels == 0)
+        lines.append(f"uncertain same-author: {np.sum(mask_uncertain & same_mask)}")
+        lines.append(f"uncertain different-author: {np.sum(mask_uncertain & diff_mask)}")
+
+        pred_l = pred.copy()
+        pred_l[mask_uncertain] = 0.5
+
+        lines.append("\n===== 0.5 SAMPLE CHECK =====")
+        mask_half = (pred_l == 0.5)
+        lines.append(f"num pred_l == 0.5: {np.sum(mask_half)}")
+        lines.append(f"0.5 with label=1: {np.sum(labels[mask_half] == 1)}")
+        lines.append(f"0.5 with label=0: {np.sum(labels[mask_half] == 0)}")
+
+        lines.append("\n===== ACCURACY AFTER THRESHOLD =====")
+        pred_bin_l = pred_l.copy()
+        pred_bin_l[pred_bin_l >= 0.5] = 1
+        pred_bin_l[pred_bin_l < 0.5] = 0
+        acc_l = np.mean(pred_bin_l == labels)
+        lines.append(f"acc after threshold: {acc_l}")
+
+        tp = np.sum((pred_bin_l == 1) & (labels == 1))
+        tn = np.sum((pred_bin_l == 0) & (labels == 0))
+        fp = np.sum((pred_bin_l == 1) & (labels == 0))
+        fn = np.sum((pred_bin_l == 0) & (labels == 1))
+
+        lines.append("\n===== CONFUSION MATRIX =====")
+        lines.append(f"TP: {tp}")
+        lines.append(f"TN: {tn}")
+        lines.append(f"FP: {fp}")
+        lines.append(f"FN: {fn}")
+
+        with open(out_txt, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+    
+    def save_debug_details_csv(self, pred, labels, best_l, out_csv):
+        import numpy as np
+        import pandas as pd
+
+        pred = np.array(pred).reshape(-1)
+        labels = np.array(labels).reshape(-1)
+
+        l1 = 0.5 - best_l
+        l2 = 0.5 + best_l
+
+        mask_uncertain = (pred > l1) & (pred < l2)
+
+        pred_l = pred.copy()
+        pred_l[mask_uncertain] = 0.5
+
+        pred_bin_raw = pred.copy()
+        pred_bin_raw[pred_bin_raw >= 0.5] = 1
+        pred_bin_raw[pred_bin_raw < 0.5] = 0
+
+        pred_bin_l = pred_l.copy()
+        pred_bin_l[pred_bin_l >= 0.5] = 1
+        pred_bin_l[pred_bin_l < 0.5] = 0
+
+        df = pd.DataFrame({
+            "sample_idx": np.arange(len(pred)),
+            "label": labels,
+            "pred_raw": pred,
+            "pred_after_threshold": pred_l,
+            "is_uncertain": mask_uncertain.astype(int),
+            "pred_bin_raw": pred_bin_raw.astype(int),
+            "pred_bin_after_threshold": pred_bin_l.astype(int),
+            "raw_correct": (pred_bin_raw == labels).astype(int),
+            "threshold_correct": (pred_bin_l == labels).astype(int)
+        })
+
+        df.to_csv(out_csv, index=False)
+    
+    def evaluate_model(self, docs_L, docs_R, labels, batch_size, split_name="unknown"):
+        import os
+        split_name = os.path.basename(split_name)
+        os.makedirs("results", exist_ok=True)
         num_batches = ceil(len(labels) / batch_size)
 
         TP, FP, TN, FN = 0, 0, 0, 0
         pred = []
+        dist = []
+
+        # ✅ 放在这里（只执行一次）
+        file_name = f"pred_dist_{split_name}.csv"
+
+        with open(file_name, "w", encoding="utf-8") as f:
+            f.write("pair_id,distance,pred,label\n")
 
         for i in range(num_batches):
 
@@ -994,7 +1139,7 @@ class AdHominem():
                 x_w_R, N_w_R, N_s_R, x_c_R = self.doc2mat(docs_R_i)
 
                 # accuracy for training set
-                curr_TP, curr_FP, curr_TN, curr_FN, curr_pred \
+                curr_TP, curr_FP, curr_TN, curr_FN, curr_pred,curr_dist \
                     = self.compute_eval_measures(x_w_L=x_w_L,
                                                  x_w_R=x_w_R,
                                                  x_c_L=x_c_L,
@@ -1010,37 +1155,89 @@ class AdHominem():
                 TN += curr_TN
                 FN += curr_FN
                 pred.extend(curr_pred)
+                dist.extend(curr_dist)
+        with open("pred_dist.csv", "a", encoding="utf-8") as f:
+            for j in range(B):
+                pair_id = i * batch_size + j
+                f.write(f"{pair_id},{float(curr_dist[j])},{float(curr_pred[j])},{int(labels_i[j])}\n")
 
         acc = self.compute_accuracy(TP, FP, TN, FN)
-        scores, th = self.grid_search(np.array(pred), np.array(labels))
+        scores, th = self.grid_search(pred, labels)
+
+        import os
+        os.makedirs("results", exist_ok=True)
+
+        test_name = os.path.splitext(os.path.basename(os.environ.get("ADH_AMAZON_TEST_FILE", "test")))[0]
+        summary_path = f"results/debug_{test_name}_summary.txt"
+        details_path = f"results/debug_{test_name}_details.csv"
+
+        self.debug_predictions_to_file(pred, labels, th, summary_path)
+        self.save_debug_details_csv(pred, labels, th, details_path)
+
+        print("Debug summary saved to", summary_path)
+        print("Debug details saved to", details_path)
+
+        print('acc={}, overall={}, th={}'.format(acc, scores['overall'], th))
+                # ===== SAVE EVAL OUTPUT (jiajie_added) =====
+        # ===== SAVE EVAL OUTPUT (clean version) =====
+        import os
+        import json
+
+        os.makedirs("results", exist_ok=True)
+
+# 自动获取当前 test 文件名
+        test_name = os.path.splitext(os.path.basename(os.environ.get("ADH_AMAZON_TEST_FILE", "unknown")))[0]
+        test_name = test_name.replace(".tsv", "")
+
+# 保存预测 & 标签
+        np.save(f"results/dist_{test_name}.npy", np.array(dist).reshape(-1))
+        np.save(f"results/pred_{test_name}.npy", np.array(pred).reshape(-1))
+        np.save(f"results/labels_{test_name}.npy", np.array(labels).reshape(-1))
+
+# 保存分数（overall等）
+        with open(f"results/scores_{test_name}.json", "w") as f:
+            json.dump(scores, f, indent=2)
+
+        print(f"[RESULT][{test_name}] acc={acc} overall={scores.get('overall', None)} th={th}")
+
+# ===== END =====
+#==add_end=============
+
 
         return acc, scores, th
-
     ###############################################
     # evaluate model 'AdHominem' for a single batch
     ###############################################
     def compute_eval_measures(self, x_w_L, x_w_R, x_c_L, x_c_R, labels, N_w_L, N_w_R, N_s_L, N_s_R):
 
-        # compute distances
-        pred = self.sess.run(self.pred,
-                             feed_dict={self.placeholders['x_w_L']: x_w_L,
-                                        self.placeholders['x_w_R']: x_w_R,
-                                        self.placeholders['x_c_L']: x_c_L,
-                                        self.placeholders['x_c_R']: x_c_R,
-                                        self.placeholders['labels']: labels,
-                                        self.placeholders['N_w_L']: N_w_L,
-                                        self.placeholders['N_w_R']: N_w_R,
-                                        self.placeholders['N_s_L']: N_s_L,
-                                        self.placeholders['N_s_R']: N_s_R,
-                                        self.placeholders['is_training']: False,
-                                        })
+        # compute predictions and distances
+        pred, dist = self.sess.run(
+            [self.pred, self.distance],
+            feed_dict={
+                self.placeholders['x_w_L']: x_w_L,
+                self.placeholders['x_w_R']: x_w_R,
+                self.placeholders['x_c_L']: x_c_L,
+                self.placeholders['x_c_R']: x_c_R,
+                self.placeholders['labels']: labels,
+                self.placeholders['N_w_L']: N_w_L,
+                self.placeholders['N_w_R']: N_w_R,
+                self.placeholders['N_s_L']: N_s_L,
+                self.placeholders['N_s_R']: N_s_R,
+                self.placeholders['is_training']: False,
+            }
+        )
+
+        # 变成一维，后面更好处理
+        pred = np.asarray(pred).reshape(-1)
+        dist = np.asarray(dist).reshape(-1)
 
         # execute label computation function
         labels_hat_kernel = self.compute_labels(labels, pred)
+
         # compute values for accuracy, F1-score and c@1
         TP, FP, TN, FN = self.compute_TP_FP_TN_FN(labels, labels_hat_kernel)
 
-        return TP, FP, TN, FN, pred
+        return TP, FP, TN, FN, pred, dist
 
     ##########################
     # calculate TP, FP, TN, FN
@@ -1128,7 +1325,7 @@ class AdHominem():
     #################
     # train AdHominem
     #################
-    def train_model(self, train_set, test_set, file_results):
+    def train_model(self, train_set, test_set, file_results, do_test = True):
 
         # total number of epochs
         epochs = self.hyper_parameters['epochs']
@@ -1212,15 +1409,31 @@ class AdHominem():
 
             # compute accuracy on train set
             acc_tr = self.compute_accuracy(TP, FP, TN, FN)
+            if do_test:
+
             # compute accuracy on test set (including PAN 2020 metrics and grid search for threshold)
-            acc_te, scores, th = self.evaluate_model(docs_L_te, docs_R_te, labels_te, batch_size_te)
+                acc_te, scores, th = self.evaluate_model(docs_L_te, docs_R_te, labels_te, batch_size_te, split_name="test")
 
             # update "results.txt"-file
-            s = 'epoch: ' + str(epoch) \
-                + ', loss: ' + str(round(float(np.mean(loss)), 4)) \
-                + ', acc (tr): ' + str(round(100 * acc_tr, 4)) \
-                + ', acc (te): ' + str(round(100 * acc_te, 4)) \
-                + ', th : ' + str(th)  \
-                + ', ' + str(scores)
-            open(file_results, 'a').write(s + '\n')
+                s = 'epoch: ' + str(epoch) \
+                    + ', loss: ' + str(round(float(np.mean(loss)), 4)) \
+                    + ', acc (tr): ' + str(round(100 * acc_tr, 4)) \
+                    + ', acc (te): ' + str(round(100 * acc_te, 4)) \
+                    + ', th : ' + str(th)  \
+                    + ', ' + str(scores)
+                open(file_results, 'a').write(s + '\n')
 
+        import os
+
+        ckpt_dir = "checkpoints"
+        if not os.path.exists(ckpt_dir):
+            os.makedirs(ckpt_dir)
+
+        save_path = self.saver.save(self.sess, os.path.join(ckpt_dir, "adhominem"))
+        print("Model saved to:", save_path)
+
+
+
+    def restore_model(self, ckpt_path):
+        self.saver.restore(self.sess, ckpt_path)
+        print("Model restored from:", ckpt_path)

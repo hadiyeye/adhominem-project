@@ -2,7 +2,11 @@
 from adhominem import AdHominem
 import pickle
 import os
+import spacy
 import argparse
+from preprocess_external import ExternalPreprocessor
+from helper_functions import Corpus
+
 
 def load_adhominem_tsv(path):
     docs_L, docs_R, labels = [], [], []
@@ -19,7 +23,7 @@ def load_adhominem_tsv(path):
                 print(line[:300])
                 continue
 
-            label, text = parts
+            text, label = parts
 
             if "$$$" not in text:
                 print(f"[BAD LINE {i}] no $$$ found:")
@@ -72,7 +76,7 @@ def main():
         os.makedirs(dir_results)
 
     # load docs, vocabularies and initialized word embeddings
-    with open(os.path.join("data", "data_PAN20train_small"), 'rb') as f:
+    with open(os.path.join("data", "data_balanced_2000_orig"), 'rb') as f:
         docs_L_tr, docs_R_tr, labels_tr, \
         docs_L_te, docs_R_te, labels_te, \
         V_w, E_w, V_c = pickle.load(f)
@@ -118,15 +122,61 @@ def main():
     elif args.mode == "test":
         adhominem.restore_model(args.ckpt)
 
+        # 不调用 __init__，避免它去加载 amazon.csv 和 fastText
+        corpus = Corpus.__new__(Corpus)
+        corpus.T_w = adhominem.hyper_parameters["T_w"]
+        corpus.tokenizer = spacy.load("en_core_web_lg")
+        
         test_file = os.environ.get("ADH_AMAZON_TEST_FILE", None)
+
         if test_file:
 
             split_name = os.path.splitext(os.path.basename(test_file))[0]
             docs_L_te, docs_R_te, labels_te = load_adhominem_tsv(test_file)
             print("Using external test file:", test_file)
+
         else:
-            split_name = "PAN20_fixed_test"
-            print("Using default PAN20 test set from pickle")
+            split_name = "PAN20_default"
+            raise ValueError("No test file provided")
+
+        # ===== DEBUG：原始数据 =====
+        print("Before preprocessing:")
+        print(type(docs_L_te[0]), docs_L_te[0][:100])
+
+        # ===== 正确的 preprocessing（和原模型一致）=====
+        docs_L_new = []
+        docs_R_new = []
+
+        print("Start preprocessing L...")
+        for i, doc in enumerate(docs_L_te):
+            if i % 100 == 0:
+                print(f"L progress: {i}/{len(docs_L_te)}")
+            docs_L_new.append(
+                corpus.add_special_tokens_doc(
+                    corpus.preprocess_doc(doc)
+                )
+            )
+
+        print("Start preprocessing R...")
+        for i, doc in enumerate(docs_R_te):
+            if i % 100 == 0:
+                print(f"R progress: {i}/{len(docs_R_te)}")
+            docs_R_new.append(
+                corpus.add_special_tokens_doc(
+                    corpus.preprocess_doc(doc)
+                )
+            )
+
+        docs_L_te = docs_L_new
+        docs_R_te = docs_R_new
+
+        print("Preprocessing done.")
+
+        # ===== DEBUG：处理后数据 =====
+        print("After preprocessing:")
+        print(type(docs_L_te[0]))
+        print(docs_L_te[0][:3])
+
 
         adhominem.evaluate_model(
             docs_L_te,

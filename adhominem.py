@@ -1154,12 +1154,12 @@ class AdHominem():
                 FP += curr_FP
                 TN += curr_TN
                 FN += curr_FN
-                pred.extend(curr_pred)
-                dist.extend(curr_dist)
-        with open("pred_dist.csv", "a", encoding="utf-8") as f:
-            for j in range(B):
-                pair_id = i * batch_size + j
-                f.write(f"{pair_id},{float(curr_dist[j])},{float(curr_pred[j])},{int(labels_i[j])}\n")
+            pred.extend(curr_pred)
+            dist.extend(curr_dist)
+            with open("pred_dist.csv", "a", encoding="utf-8") as f:
+                for j in range(B):
+                    pair_id = i * batch_size + j
+                    f.write(f"{pair_id},{float(curr_dist[j])},{float(curr_pred[j])},{int(labels_i[j])}\n")
 
         acc = self.compute_accuracy(TP, FP, TN, FN)
         scores, th = self.grid_search(pred, labels)

@@ -33,8 +33,19 @@ class Corpus(object):
         amazon_train_file = os.environ.get("ADH_AMAZON_TRAIN_FILE", "amazon_train.tsv")
         amazon_test_file  = os.environ.get("ADH_AMAZON_TEST_FILE",  "amazon_test_orig.tsv")
 
-        self.data_panda_train = pd.read_csv(os.path.join(data_dir, amazon_train_file), sep="\t")
-        self.data_panda_test  = pd.read_csv(os.path.join(data_dir, amazon_test_file),  sep="\t")
+        self.data_panda_train = pd.read_csv(
+            os.path.join(data_dir, amazon_train_file),
+            sep="\t",
+            header=None,
+            names=["review", "sentiment"]
+        )
+
+        self.data_panda_test = pd.read_csv(
+            os.path.join(data_dir, amazon_test_file),
+            sep="\t",
+            header=None,
+            names=["review", "sentiment"]
+        )
 
 
 

@@ -6,7 +6,8 @@ import spacy
 import argparse
 from preprocess_external import ExternalPreprocessor
 from helper_functions import Corpus
-
+from bs4 import BeautifulSoup
+import pandas as pd
 
 def load_adhominem_tsv(path):
     docs_L, docs_R, labels = [], [], []
@@ -56,8 +57,8 @@ def main():
     parser.add_argument('-t_d', default=0.05, type=float)  # boundary for dissimilar pairs (close to zero)
     parser.add_argument('-epochs', default=100, type=int)  # total number of epochs
     parser.add_argument('-train_word_embeddings', default=False, type=bool)  # fine-tune pre-trained word embeddings
-    parser.add_argument('-batch_size_tr', default=32, type=int)  # batch size for training
-    parser.add_argument('-batch_size_te', default=128, type=int)  # batch size for evaluation
+    parser.add_argument('-batch_size_tr', default=100, type=int)  # batch size for training
+    parser.add_argument('-batch_size_te', default=100, type=int)  # batch size for evaluation
     parser.add_argument('-initial_learning_rate', default=0.002, type=float)  # initial learning rate
     parser.add_argument('-keep_prob_cnn', default=0.9, type=float)  # dropout for 1D-CNN layer
     parser.add_argument('-keep_prob_lstm', default=0.9, type=float)  # variational dropout for BiLSTM layer
@@ -71,7 +72,7 @@ def main():
     hyper_parameters = vars(parser.parse_args())
 
     # create folder for results
-    dir_results = os.path.join('results')
+    dir_results = os.path.join('results')   
     if not os.path.exists(dir_results):
         os.makedirs(dir_results)
 
@@ -117,33 +118,45 @@ def main():
     
 
     if args.mode == "train":
-        adhominem.train_model(train_set, test_set, file_results)
+        print('We are now in training mode')
+        print(file_results)
+        adhominem.train_model(train_set, test_set, file_results, True)
 
     elif args.mode == "test":
         adhominem.restore_model(args.ckpt)
 
-        # 不调用 __init__，避免它去加载 amazon.csv 和 fastText
         corpus = Corpus.__new__(Corpus)
         corpus.T_w = adhominem.hyper_parameters["T_w"]
         corpus.tokenizer = spacy.load("en_core_web_lg")
-        
+
+        data_dir = os.environ.get("ADH_DATA_DIR", os.path.join(os.getcwd(), "data"))
         test_file = os.environ.get("ADH_AMAZON_TEST_FILE", None)
 
         if test_file:
+            if os.path.isabs(test_file):
+                test_path = test_file
+            else:
+                test_path = os.path.join(data_dir, test_file)
 
-            split_name = os.path.splitext(os.path.basename(test_file))[0]
-            docs_L_te, docs_R_te, labels_te = load_adhominem_tsv(test_file)
-            print("Using external test file:", test_file)
+            split_name = os.path.splitext(os.path.basename(test_path))[0]
+
+            print("[TEST] ADH_DATA_DIR =", data_dir)
+            print("[TEST] ADH_AMAZON_TEST_FILE =", test_file)
+            print("[TEST] test_path =", os.path.abspath(test_path))
+            print("[TEST] test exists?", os.path.exists(test_path))
+
+            docs_L_te, docs_R_te, labels_te = load_adhominem_tsv(test_path)
+            print("Using external test file:", test_path)
 
         else:
             split_name = "PAN20_default"
             raise ValueError("No test file provided")
 
-        # ===== DEBUG：原始数据 =====
-        print("Before preprocessing:")
-        print(type(docs_L_te[0]), docs_L_te[0][:100])
+        print("[TEST] loaded pairs:", len(labels_te))
+        print("[TEST] first raw L:", docs_L_te[0][:300])
+        print("[TEST] first raw R:", docs_R_te[0][:300])
+        print("[TEST] first label:", labels_te[0])
 
-        # ===== 正确的 preprocessing（和原模型一致）=====
         docs_L_new = []
         docs_R_new = []
 
@@ -151,6 +164,9 @@ def main():
         for i, doc in enumerate(docs_L_te):
             if i % 100 == 0:
                 print(f"L progress: {i}/{len(docs_L_te)}")
+
+            doc = BeautifulSoup(doc, 'html.parser').get_text().encode('utf-8').decode('utf-8')
+
             docs_L_new.append(
                 corpus.add_special_tokens_doc(
                     corpus.preprocess_doc(doc)
@@ -161,6 +177,9 @@ def main():
         for i, doc in enumerate(docs_R_te):
             if i % 100 == 0:
                 print(f"R progress: {i}/{len(docs_R_te)}")
+
+            doc = BeautifulSoup(doc, 'html.parser').get_text().encode('utf-8').decode('utf-8')
+
             docs_R_new.append(
                 corpus.add_special_tokens_doc(
                     corpus.preprocess_doc(doc)
@@ -171,12 +190,8 @@ def main():
         docs_R_te = docs_R_new
 
         print("Preprocessing done.")
-
-        # ===== DEBUG：处理后数据 =====
-        print("After preprocessing:")
-        print(type(docs_L_te[0]))
-        print(docs_L_te[0][:3])
-
+        print("[TEST] first processed L:", docs_L_te[0][:3])
+        print("[TEST] first processed R:", docs_R_te[0][:3])
 
         adhominem.evaluate_model(
             docs_L_te,

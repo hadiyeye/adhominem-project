@@ -1108,136 +1108,124 @@ class AdHominem():
     
     def evaluate_model(self, docs_L, docs_R, labels, batch_size, split_name="unknown"):
         import os
-        split_name = os.path.basename(split_name)
+        import json
+        import numpy as np
+        from math import ceil
+
+        # split_name controls all output names
+        split_name = os.path.splitext(os.path.basename(str(split_name)))[0]
         os.makedirs("results", exist_ok=True)
+
         num_batches = ceil(len(labels) / batch_size)
 
         TP, FP, TN, FN = 0, 0, 0, 0
         pred = []
         dist = []
 
-        # ✅ 放在这里（只执行一次）
-        file_name = f"pred_dist_{split_name}.csv"
+        # Save pred/dist under results/, separated by split_name
+        pred_dist_path = os.path.join("results", f"pred_dist_{split_name}.csv")
 
-        with open(file_name, "w", encoding="utf-8") as f:
+        with open(pred_dist_path, "w", encoding="utf-8") as f:
             f.write("pair_id,distance,pred,label\n")
 
         for i in range(num_batches):
+    
+            docs_L_i, docs_R_i, labels_i = self.next_batch(
+                i * batch_size,
+                (i + 1) * batch_size,
+                docs_L,
+                docs_R,
+                labels,
+            )
 
-            # get next batch
-            docs_L_i, docs_R_i, labels_i = self.next_batch(i * batch_size,
-                                                           (i + 1) * batch_size,
-                                                           docs_L,
-                                                           docs_R,
-                                                           labels,
-                                                           )
             B = len(labels_i)
 
             if B > 0:
-                # word/character embeddings
                 x_w_L, N_w_L, N_s_L, x_c_L = self.doc2mat(docs_L_i)
                 x_w_R, N_w_R, N_s_R, x_c_R = self.doc2mat(docs_R_i)
 
-                # accuracy for training set
-                curr_TP, curr_FP, curr_TN, curr_FN, curr_pred,curr_dist \
-                    = self.compute_eval_measures(x_w_L=x_w_L,
-                                                 x_w_R=x_w_R,
-                                                 x_c_L=x_c_L,
-                                                 x_c_R=x_c_R,
-                                                 labels=np.array(labels_i).reshape((B, 1)),
-                                                 N_w_L=N_w_L,
-                                                 N_w_R=N_w_R,
-                                                 N_s_L=N_s_L,
-                                                 N_s_R=N_s_R,
-                                                 )
+                feed_dict = {
+                    self.placeholders['x_w_L']: x_w_L,
+                    self.placeholders['x_w_R']: x_w_R,
+                    self.placeholders['x_c_L']: x_c_L,
+                    self.placeholders['x_c_R']: x_c_R,
+                    self.placeholders['labels']: np.array(labels_i).reshape((B, 1)),
+                    self.placeholders['N_w_L']: N_w_L,
+                    self.placeholders['N_w_R']: N_w_R,
+                    self.placeholders['N_s_L']: N_s_L,
+                    self.placeholders['N_s_R']: N_s_R,
+                    self.placeholders['is_training']: False,
+                }
+
+                curr_pred = self.sess.run(self.pred, feed_dict=feed_dict)
+
+                labels_hat = self.compute_labels(
+                    np.array(labels_i).reshape((B, 1)),
+                    curr_pred
+                )
+
+                curr_TP, curr_FP, curr_TN, curr_FN = self.compute_TP_FP_TN_FN(
+                    np.array(labels_i).reshape((B, 1)),
+                    labels_hat
+                )
+
+                curr_pred = np.array(curr_pred).reshape(-1)
+
+                # 暂时没有单独取 distance，所以先写 NaN
+                curr_dist = np.full_like(curr_pred, np.nan, dtype=float)
+                
                 TP += curr_TP
                 FP += curr_FP
                 TN += curr_TN
                 FN += curr_FN
-            pred.extend(curr_pred)
-            dist.extend(curr_dist)
-            with open("pred_dist.csv", "a", encoding="utf-8") as f:
-                for j in range(B):
-                    pair_id = i * batch_size + j
-                    f.write(f"{pair_id},{float(curr_dist[j])},{float(curr_pred[j])},{int(labels_i[j])}\n")
+
+                pred.extend(curr_pred)
+                dist.extend(curr_dist)
+
+                with open(pred_dist_path, "a", encoding="utf-8") as f:
+                    for j in range(B):
+                        pair_id = i * batch_size + j
+                        f.write(
+                            f"{pair_id},{float(curr_dist[j])},{float(curr_pred[j])},{int(labels_i[j])}\n"
+                        )
 
         acc = self.compute_accuracy(TP, FP, TN, FN)
         scores, th = self.grid_search(pred, labels)
 
-        import os
-        os.makedirs("results", exist_ok=True)
-
-        test_name = os.path.splitext(os.path.basename(os.environ.get("ADH_AMAZON_TEST_FILE", "test")))[0]
-        summary_path = f"results/debug_{test_name}_summary.txt"
-        details_path = f"results/debug_{test_name}_details.csv"
+        # Debug files, separated by split_name
+        summary_path = os.path.join("results", f"debug_{split_name}_summary.txt")
+        details_path = os.path.join("results", f"debug_{split_name}_details.csv")
 
         self.debug_predictions_to_file(pred, labels, th, summary_path)
         self.save_debug_details_csv(pred, labels, th, details_path)
 
         print("Debug summary saved to", summary_path)
         print("Debug details saved to", details_path)
+        print("Pred/dist saved to", pred_dist_path)
 
-        print('acc={}, overall={}, th={}'.format(acc, scores['overall'], th))
-                # ===== SAVE EVAL OUTPUT (jiajie_added) =====
-        # ===== SAVE EVAL OUTPUT (clean version) =====
-        import os
-        import json
+        # Save numpy arrays, separated by split_name
+        np.save(os.path.join("results", f"dist_{split_name}.npy"), np.array(dist).reshape(-1))
+        np.save(os.path.join("results", f"pred_{split_name}.npy"), np.array(pred).reshape(-1))
+        np.save(os.path.join("results", f"labels_{split_name}.npy"), np.array(labels).reshape(-1))
 
-        os.makedirs("results", exist_ok=True)
+        # Save scores, separated by split_name
+        scores_out = dict(scores)
+        scores_out["acc"] = float(acc)
+        scores_out["th"] = float(th)
+        scores_out["n_samples"] = int(len(labels))
 
-# 自动获取当前 test 文件名
-        test_name = os.path.splitext(os.path.basename(os.environ.get("ADH_AMAZON_TEST_FILE", "unknown")))[0]
-        test_name = test_name.replace(".tsv", "")
+        with open(os.path.join("results", f"scores_{split_name}.json"), "w", encoding="utf-8") as f:
+            json.dump(scores_out, f, indent=2)
 
-# 保存预测 & 标签
-        np.save(f"results/dist_{test_name}.npy", np.array(dist).reshape(-1))
-        np.save(f"results/pred_{test_name}.npy", np.array(pred).reshape(-1))
-        np.save(f"results/labels_{test_name}.npy", np.array(labels).reshape(-1))
-
-# 保存分数（overall等）
-        with open(f"results/scores_{test_name}.json", "w") as f:
-            json.dump(scores, f, indent=2)
-
-        print(f"[RESULT][{test_name}] acc={acc} overall={scores.get('overall', None)} th={th}")
-
-# ===== END =====
-#==add_end=============
-
+        print("[RESULT][{}] acc={} overall={} th={}".format(
+            split_name,
+            acc,
+            scores.get("overall", None),
+            th
+        ))
 
         return acc, scores, th
-    ###############################################
-    # evaluate model 'AdHominem' for a single batch
-    ###############################################
-    def compute_eval_measures(self, x_w_L, x_w_R, x_c_L, x_c_R, labels, N_w_L, N_w_R, N_s_L, N_s_R):
-
-        # compute predictions and distances
-        pred, dist = self.sess.run(
-            [self.pred, self.distance],
-            feed_dict={
-                self.placeholders['x_w_L']: x_w_L,
-                self.placeholders['x_w_R']: x_w_R,
-                self.placeholders['x_c_L']: x_c_L,
-                self.placeholders['x_c_R']: x_c_R,
-                self.placeholders['labels']: labels,
-                self.placeholders['N_w_L']: N_w_L,
-                self.placeholders['N_w_R']: N_w_R,
-                self.placeholders['N_s_L']: N_s_L,
-                self.placeholders['N_s_R']: N_s_R,
-                self.placeholders['is_training']: False,
-            }
-        )
-
-        # 变成一维，后面更好处理
-        pred = np.asarray(pred).reshape(-1)
-        dist = np.asarray(dist).reshape(-1)
-
-        # execute label computation function
-        labels_hat_kernel = self.compute_labels(labels, pred)
-
-        # compute values for accuracy, F1-score and c@1
-        TP, FP, TN, FN = self.compute_TP_FP_TN_FN(labels, labels_hat_kernel)
-
-        return TP, FP, TN, FN, pred, dist
+    
 
     ##########################
     # calculate TP, FP, TN, FN
@@ -1338,6 +1326,28 @@ class AdHominem():
         docs_L_tr, docs_R_tr, labels_tr = train_set
         docs_L_te, docs_R_te, labels_te = test_set
 
+        import os
+        import csv
+
+        os.makedirs("results", exist_ok=True)
+
+        epoch_metrics_path = os.path.join("results", "epoch_metrics.csv")
+
+        with open(epoch_metrics_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "epoch",
+                "split",
+                "acc",
+                "overall",
+                "auc",
+                "c@1",
+                "f_05_u",
+                "F1",
+                "th",
+                "n_samples"
+            ])
+        
         # define learning rate weighting for adversarial domain adaption
         p = np.array(range(epochs)) / epochs
         lr = [min(self.hyper_parameters['initial_learning_rate'] / ((1. + 5.0 * i) ** 0.4), 0.0015) for i in p]
@@ -1404,10 +1414,10 @@ class AdHominem():
                         + ", acc: " + str(round(100 * (TP + TN) / (TP + FP + TN + FN), 2)) \
                         + ", curr Loss: " + str(round(curr_loss, 2)) \
                         + ", curr Acc: " + str(round(100 * curr_acc, 2)) \
-                        + ", lr: " + str(round(float(lr[epoch]), 6))
+                        + ", lr: " + str(round(float(lr[epoch]), 6)) 
                     print(s)
-
-            # compute accuracy on train set
+                # loop over all batches
+                
             acc_tr = self.compute_accuracy(TP, FP, TN, FN)
             if do_test:
 
@@ -1421,8 +1431,10 @@ class AdHominem():
                     + ', acc (te): ' + str(round(100 * acc_te, 4)) \
                     + ', th : ' + str(th)  \
                     + ', ' + str(scores)
+                print(s)
                 open(file_results, 'a').write(s + '\n')
-
+                
+                
         import os
 
         ckpt_dir = "checkpoints"

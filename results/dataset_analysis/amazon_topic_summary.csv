@@ -1,0 +1,2 @@
+dataset,num_texts,total_content_words,vocabulary_size,lexical_diversity
+Amazon,18000,8812738,97274,0.011037886295950249

@@ -1,0 +1,4 @@
+dataset,num_texts,total_content_words,vocabulary_size,lexical_diversity
+Reddit train,14000,760009,71145,0.09361073355710262
+Reddit test,4000,214492,35400,0.16504112041474742
+Reddit train+test,18000,974501,83615,0.0858028878369545

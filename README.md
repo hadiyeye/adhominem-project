@@ -22,7 +22,7 @@ The main research question is:
 
 This repository was created as part of my master's thesis project in Computer Science. The thesis focuses on the impact of AI rewriting on authorship verification, especially model robustness, prediction confidence, and linguistic changes.
 
-The full thesis PDF is not included in this repository. Instead, this repository provides the experiment scripts, selected result files, and analysis outputs needed to understand the technical workflow.
+The thesis is available in [DiVA](https://www.diva-portal.org/smash/record.jsf?pid=diva2:2097473).
 
 ---
 
